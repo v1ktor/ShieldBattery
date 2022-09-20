@@ -464,7 +464,7 @@ export default class ChatService {
       id: channelInfo.id,
       name: channelInfo.name,
       private: channelInfo.private,
-      highTraffic: channelInfo.highTraffic,
+      official: channelInfo.official,
       userCount,
     }
   }
@@ -534,7 +534,7 @@ export default class ChatService {
     return {
       messages,
       users,
-      mentions: Array.from(mentions.values()),
+      mentions,
     }
   }
 

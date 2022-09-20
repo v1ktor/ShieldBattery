@@ -7,10 +7,9 @@ import { ConnectedAvatar } from '../avatars/avatar'
 import { useVirtuosoScrollFix } from '../dom/virtuoso-scroll-fix'
 import { Chat } from '../messaging/chat'
 import { useChatMenuItems, useMentionFilterClick } from '../messaging/mention-hooks'
-import { Message } from '../messaging/message-records'
+import { SbMessage } from '../messaging/message-records'
 import { push } from '../navigation/routing'
 import { useAppDispatch, useAppSelector } from '../redux-hooks'
-import { RootState } from '../root-reducer'
 import { usePrevious, useStableCallback } from '../state-hooks'
 import {
   alphaDisabled,
@@ -21,6 +20,11 @@ import {
   colorTextSecondary,
 } from '../styles/colors'
 import { body2, overline, singleLine } from '../styles/typography'
+import {
+  areUserEntriesEqual,
+  sortUserEntries,
+  useUserEntriesSelector,
+} from '../users/sorted-user-ids'
 import { ConnectedUserContextMenu, MenuItemCategory } from '../users/user-context-menu'
 import { useUserOverlays } from '../users/user-overlays'
 import { ConnectedUserProfileOverlay } from '../users/user-profile-overlay'
@@ -101,17 +105,15 @@ const fadedCss = css`
   }
 `
 
-const USER_ENTRY_HEIGHT = 44
-
 interface UserListEntryItemProps {
-  isOverlayOpen?: boolean
-  faded?: boolean
+  $isOverlayOpen?: boolean
+  $faded?: boolean
 }
 
 const UserListEntryItem = styled.div<UserListEntryItemProps>`
   ${body2};
   ${userListRow};
-  height: ${USER_ENTRY_HEIGHT}px;
+  height: 44px;
   border-radius: 2px;
   padding-top: 4px;
   padding-bottom: 4px;
@@ -122,14 +124,14 @@ const UserListEntryItem = styled.div<UserListEntryItemProps>`
   }
 
   ${props => {
-    if (props.isOverlayOpen) {
+    if (props.$isOverlayOpen) {
       return 'background-color: rgba(255, 255, 255, 0.08);'
     }
     return ''
   }}
 
   ${props => {
-    if (props.faded) {
+    if (props.$faded) {
       return fadedCss
     }
     return ''
@@ -144,7 +146,7 @@ const UserListName = styled.span`
 interface UserListEntryProps {
   userId: SbUserId
   faded?: boolean
-  style?: any
+  style?: React.CSSProperties
 }
 
 const ConnectedUserListEntry = React.memo<UserListEntryProps>(props => {
@@ -178,8 +180,8 @@ const ConnectedUserListEntry = React.memo<UserListEntryProps>(props => {
       <UserListEntryItem
         ref={clickableElemRef}
         key='entry'
-        faded={!!props.faded}
-        isOverlayOpen={isOverlayOpen}
+        $faded={!!props.faded}
+        $isOverlayOpen={isOverlayOpen}
         onClick={onClick}
         onContextMenu={onContextMenu}>
         <StyledAvatar userId={props.userId} />
@@ -300,7 +302,7 @@ const ChannelInfoContainer = styled.div`
   align-items: center;
 `
 
-function renderMessage(msg: Message) {
+function renderMessage(msg: SbMessage) {
   switch (msg.type) {
     case ClientChatMessageType.BanUser:
       return <BanUserMessage key={msg.id} time={msg.time} userId={msg.userId} />
@@ -317,60 +319,6 @@ function renderMessage(msg: Message) {
     default:
       return null
   }
-}
-
-type UserEntry = [userId: SbUserId, username: string | undefined]
-
-function useUserEntriesSelector(userIds: ReadonlySet<SbUserId> | undefined) {
-  return useCallback(
-    (state: RootState): ReadonlyArray<UserEntry> => {
-      if (!userIds?.size) {
-        return []
-      }
-
-      const result = Array.from<SbUserId, UserEntry>(userIds.values(), id => [
-        id,
-        state.users.byId.get(id)?.name,
-      ])
-      result.sort((a, b) => a[0] - b[0])
-      return result
-    },
-    [userIds],
-  )
-}
-
-function areUserEntriesEqual(a: ReadonlyArray<UserEntry>, b: ReadonlyArray<UserEntry>): boolean {
-  if (a.length !== b.length) {
-    return false
-  }
-
-  for (let i = 0; i < a.length; i++) {
-    const [aId, aName] = a[i]
-    const [bId, bName] = b[i]
-    if (aId !== bId || aName !== bName) {
-      return false
-    }
-  }
-
-  return true
-}
-
-function sortUsers(userEntries: ReadonlyArray<UserEntry>): SbUserId[] {
-  return userEntries
-    .slice()
-    .sort(([aId, aName], [bId, bName]) => {
-      // We put any user that still hasn't loaded at the bottom of the list
-      if (aName === bName) {
-        return 0
-      } else if (!aName) {
-        return 1
-      } else if (!bName) {
-        return -1
-      }
-
-      return aName.localeCompare(bName)
-    })
-    .map(([userId]) => userId)
 }
 
 interface ChatChannelProps {
@@ -438,9 +386,12 @@ export function ConnectedChatChannel({
     dispatch(sendMessage(channelId, msg)),
   )
 
-  const sortedActiveUsers = useMemo(() => sortUsers(activeUserEntries), [activeUserEntries])
-  const sortedIdleUsers = useMemo(() => sortUsers(idleUserEntries), [idleUserEntries])
-  const sortedOfflineUsers = useMemo(() => sortUsers(offlineUserEntries), [offlineUserEntries])
+  const sortedActiveUsers = useMemo(() => sortUserEntries(activeUserEntries), [activeUserEntries])
+  const sortedIdleUsers = useMemo(() => sortUserEntries(idleUserEntries), [idleUserEntries])
+  const sortedOfflineUsers = useMemo(
+    () => sortUserEntries(offlineUserEntries),
+    [offlineUserEntries],
+  )
 
   const modifyMenuItems = useCallback(
     (
