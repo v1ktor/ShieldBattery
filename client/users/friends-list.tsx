@@ -2,10 +2,14 @@ import keycode from 'keycode'
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Virtuoso } from 'react-virtuoso'
 import styled, { css } from 'styled-components'
-import { UserRelationshipJson } from '../../common/users/relationships'
+import { appendToMultimap } from '../../common/data-structures/maps'
+import { FriendActivityStatus, UserRelationshipJson } from '../../common/users/relationships'
 import { SbUserId } from '../../common/users/sb-user'
+import { useSelfUser } from '../auth/state-hooks'
 import { ConnectedAvatar } from '../avatars/avatar'
 import { useObservedDimensions } from '../dom/dimension-hooks'
+import CheckIcon from '../icons/material/check-24px.svg'
+import CloseIcon from '../icons/material/close-24px.svg'
 import FriendsIcon from '../icons/material/group-24px.svg'
 import FriendAddIcon from '../icons/material/group_add-24px.svg'
 import FriendSettingsIcon from '../icons/material/manage_accounts-24px.svg'
@@ -17,11 +21,17 @@ import { TabItem, Tabs } from '../material/tabs'
 import { Tooltip } from '../material/tooltip'
 import { useAppDispatch, useAppSelector } from '../redux-hooks'
 import { openSettingsDialog } from '../settings/action-creators'
-import { openSnackbar } from '../snackbars/action-creators'
+import { openSnackbar, TIMING_LONG } from '../snackbars/action-creators'
 import { useForceUpdate, useStableCallback } from '../state-hooks'
 import { alphaDisabled, colorDividers, colorTextFaint, colorTextSecondary } from '../styles/colors'
 import { body2, headline6, overline, singleLine, subtitle1 } from '../styles/typography'
-import { getRelationshipsIfNeeded } from './action-creators'
+import {
+  acceptFriendRequest,
+  declineFriendRequest,
+  getRelationshipsIfNeeded,
+  removeFriendRequest,
+} from './action-creators'
+import { userRelationshipErrorToString } from './relationship-errors'
 import { areUserEntriesEqual, sortUserEntries, useUserEntriesSelector } from './sorted-user-ids'
 import { ConnectedUserContextMenu } from './user-context-menu'
 import { useUserOverlays } from './user-overlays'
@@ -103,7 +113,12 @@ export function FriendsListActivityButton() {
   const buttonRef = useRef<HTMLButtonElement>(null)
   useButtonHotkey({ ref: buttonRef, hotkey: ALT_E })
 
-  const friendCount = useAppSelector(s => s.relationships.friends.size)
+  const friendActivityStatus = useAppSelector(s => s.relationships.friendActivityStatus)
+  const friendCount = useMemo(() => {
+    return Array.from(friendActivityStatus.values()).filter(
+      status => status !== FriendActivityStatus.Offline,
+    ).length
+  }, [friendActivityStatus])
 
   return (
     <>
@@ -277,21 +292,42 @@ type FriendsListRowData = HeaderData | OnlineData | OfflineData
 
 function FriendsList({ height }: { height: number }) {
   const friends = useAppSelector(s => s.relationships.friends)
+  const friendActivityStatus = useAppSelector(s => s.relationships.friendActivityStatus)
   const friendUserEntries = useAppSelector(useUserEntriesSelector(friends), areUserEntriesEqual)
-  const sortedFriends = useMemo(() => sortUserEntries(friendUserEntries), [friendUserEntries])
+  const friendsByStatus = useMemo(() => {
+    const sortedFriends = sortUserEntries(friendUserEntries)
+    const result = new Map<FriendActivityStatus, SbUserId[]>()
+    for (const f of sortedFriends) {
+      appendToMultimap(result, friendActivityStatus.get(f) ?? FriendActivityStatus.Offline, f)
+    }
+    return result
+  }, [friendUserEntries, friendActivityStatus])
 
-  // TODO(tec27): actually use online/offline stuff
   const rowData = useMemo((): ReadonlyArray<FriendsListRowData> => {
+    const onlineFriends = friendsByStatus.get(FriendActivityStatus.Online) ?? []
     let result: FriendsListRowData[] = [
-      { type: FriendsListRowType.Header, label: 'Online', count: sortedFriends.length },
+      { type: FriendsListRowType.Header, label: 'Online', count: onlineFriends.length },
     ]
 
     result = result.concat(
-      sortedFriends.map(userId => ({ type: FriendsListRowType.Online, userId })),
+      onlineFriends.map(userId => ({ type: FriendsListRowType.Online, userId })),
     )
 
+    const offlineFriends = friendsByStatus.get(FriendActivityStatus.Offline) ?? []
+    if (offlineFriends.length > 0) {
+      result.push({
+        type: FriendsListRowType.Header,
+        label: 'Offline',
+        count: offlineFriends.length,
+      })
+
+      result = result.concat(
+        offlineFriends.map(userId => ({ type: FriendsListRowType.Offline, userId })),
+      )
+    }
+
     return result
-  }, [sortedFriends])
+  }, [friendsByStatus])
 
   const renderRow = useCallback((index: number, row: FriendsListRowData) => {
     if (row.type === FriendsListRowType.Header) {
@@ -306,7 +342,7 @@ function FriendsList({ height }: { height: number }) {
     }
   }, [])
 
-  return sortedFriends.length === 0 ? (
+  return friends.size === 0 ? (
     <EmptyList>Nothing to see here</EmptyList>
   ) : (
     <Virtuoso
@@ -338,6 +374,8 @@ interface FriendRequestsUserData {
 type FriendRequestsRowData = FriendRequestsHeaderData | FriendRequestsUserData
 
 function FriendRequestsList({ height }: { height: number }) {
+  const dispatch = useAppDispatch()
+  const selfUser = useSelfUser()
   const incomingRequests = useAppSelector(s => s.relationships.incomingRequests)
   const outgoingRequests = useAppSelector(s => s.relationships.outgoingRequests)
   const incomingUserEntries = useAppSelector(
@@ -388,19 +426,94 @@ function FriendRequestsList({ height }: { height: number }) {
     return result
   }, [incomingRequests, outgoingRequests, sortedIncoming, sortedOutgoing])
 
-  const renderRow = useCallback((index: number, row: FriendRequestsRowData) => {
-    if (row.type === FriendRequestsRowType.Header) {
-      return (
-        <ListOverline key={row.label} $firstOverline={index === 0}>
-          {row.label} ({row.count})
-        </ListOverline>
-      )
-    } else {
-      // TODO(tec27): add buttons on the right side to accept/reject the request (or cancel an
-      // outgoing request)
-      return <FriendEntry userId={row.userId} key={row.userId} />
-    }
-  }, [])
+  const renderRow = useCallback(
+    (index: number, row: FriendRequestsRowData) => {
+      if (row.type === FriendRequestsRowType.Header) {
+        return (
+          <ListOverline key={row.label} $firstOverline={index === 0}>
+            {row.label} ({row.count})
+          </ListOverline>
+        )
+      } else {
+        const actions =
+          row.relationship.fromId === selfUser.id ? (
+            <>
+              <IconButton
+                icon={<CloseIcon />}
+                title='Remove'
+                onClick={() => {
+                  dispatch(
+                    removeFriendRequest(row.userId, {
+                      onSuccess: () => {},
+                      onError: err => {
+                        dispatch(
+                          openSnackbar({
+                            message: userRelationshipErrorToString(
+                              err,
+                              'Error removing friend request',
+                            ),
+                            time: TIMING_LONG,
+                          }),
+                        )
+                      },
+                    }),
+                  )
+                }}
+              />
+            </>
+          ) : (
+            <>
+              <IconButton
+                icon={<CloseIcon />}
+                title='Decline'
+                onClick={() => {
+                  dispatch(
+                    declineFriendRequest(row.userId, {
+                      onSuccess: () => {},
+                      onError: err => {
+                        dispatch(
+                          openSnackbar({
+                            message: userRelationshipErrorToString(
+                              err,
+                              'Error declining friend request',
+                            ),
+                            time: TIMING_LONG,
+                          }),
+                        )
+                      },
+                    }),
+                  )
+                }}
+              />
+              <IconButton
+                icon={<CheckIcon />}
+                title='Accept'
+                onClick={() => {
+                  dispatch(
+                    acceptFriendRequest(row.userId, {
+                      onSuccess: () => {},
+                      onError: err => {
+                        dispatch(
+                          openSnackbar({
+                            message: userRelationshipErrorToString(
+                              err,
+                              'Error accepting friend request',
+                            ),
+                            time: TIMING_LONG,
+                          }),
+                        )
+                      },
+                    }),
+                  )
+                }}
+              />
+            </>
+          )
+        return <FriendEntry userId={row.userId} key={row.userId} actions={actions} />
+      }
+    },
+    [selfUser.id, dispatch],
+  )
 
   return rowData.length === 0 ? (
     <EmptyList>Nothing to see here</EmptyList>
@@ -439,11 +552,19 @@ const fadedCss = css`
   }
 `
 
+const FriendEntryActions = styled.div`
+  display: flex;
+  align-items: center;
+`
+
 const FriendEntryRoot = styled.div<{ $isOverlayOpen?: boolean; $faded?: boolean }>`
   ${body2};
   height: 44px;
   margin: 0 8px;
   padding: 4px 8px;
+
+  display: flex;
+  align-items: center;
 
   border-radius: 2px;
   line-height: 36px;
@@ -466,21 +587,31 @@ const FriendEntryRoot = styled.div<{ $isOverlayOpen?: boolean; $faded?: boolean 
     }
     return ''
   }}
+
+  ${FriendEntryActions} {
+    opacity: 0;
+  }
+
+  &:hover ${FriendEntryActions} {
+    opacity: 1;
+  }
 `
 
-const FriendEntryName = styled.span`
+const FriendEntryName = styled.div`
   ${singleLine};
-  display: inline-block;
+  flex-grow: 1;
 `
 
 function FriendEntry({
   userId,
   faded = false,
   style,
+  actions,
 }: {
   userId: SbUserId
   faded?: boolean
   style?: React.CSSProperties
+  actions?: React.ReactNode
 }) {
   const user = useAppSelector(s => s.users.byId.get(userId))
 
@@ -518,6 +649,7 @@ function FriendEntry({
         ) : (
           <LoadingName aria-label='Username loading…' />
         )}
+        {actions ? <FriendEntryActions>{actions}</FriendEntryActions> : null}
       </FriendEntryRoot>
     </div>
   )

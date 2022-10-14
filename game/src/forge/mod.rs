@@ -26,6 +26,7 @@ mod scr_hooks {
         !0 => SetWindowPos(HWND, HWND, i32, i32, i32, i32, u32) -> u32;
         !0 => SetCursorPos(i32, i32) -> i32;
         !0 => GetWindowLongW(HWND, i32) -> u32;
+        !0 => RegisterHotKey(HWND, i32, u32, u32) -> u32;
     );
 }
 
@@ -149,11 +150,6 @@ unsafe fn msg_timer(window: HWND, timer_id: i32) {
         // remove hotkey and timer
         UnregisterHotKey(window, FOREGROUND_HOTKEY_ID);
         KillTimer(window, FOREGROUND_HOTKEY_ID as usize);
-
-        // Set the final window title for scene switchers to key off of. Note that this
-        // is different from BW's "typical" title so that people don't have to reconfigure
-        // scene switchers when moving between our service and others.
-        SetWindowTextA(window, "Brood War - ShieldBattery\0".as_ptr() as *const i8);
 
         // Show the window and bring it to the front
         ShowWindow(window, SW_SHOWNORMAL);
@@ -458,6 +454,30 @@ fn get_window_long_w(window: HWND, long: i32, orig: unsafe extern "C" fn(HWND, i
     }
 }
 
+fn register_hot_key(
+    window: HWND,
+    id: i32,
+    modifiers: u32,
+    vkcode: u32,
+    orig: unsafe extern "C" fn(HWND, i32, u32, u32) -> u32,
+) -> u32 {
+    // SC:R calls this to hook printscreen and alt+printscreen presses, but does a very bad job of
+    // handling these that makes alt+printscreen non-functional as long as the game is running. More
+    // stupidly, they also handle printscreen presses are part of normal keypress events, and thus
+    // these hotkeys are not even particularly necessary in the first place (I can only hope that
+    // on prior versions of Windows this was not the case, and thus this implementation made sense
+    // at *some* point, but I really have no idea)
+
+    // Pass non-printscreen hotkeys through (although at the time of writing, there aren't any)
+    if vkcode != 0x2c {
+        unsafe {
+            return orig(window, id, modifiers, vkcode);
+        }
+    }
+
+    1
+}
+
 pub unsafe fn init_hooks_scr(patcher: &mut whack::Patcher) {
     use self::scr_hooks::*;
     // 1161 init can hook just starcraft/storm import table, unfortunately
@@ -480,6 +500,7 @@ pub unsafe fn init_hooks_scr(patcher: &mut whack::Patcher) {
         "SetWindowPos", SetWindowPos, set_window_pos;
         "SetCursorPos", SetCursorPos, scr_set_cursor_pos;
         "GetWindowLongW", GetWindowLongW, get_window_long_w;
+        "RegisterHotKey", RegisterHotKey, register_hot_key;
     );
 }
 
