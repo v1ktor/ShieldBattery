@@ -1,30 +1,29 @@
 import { expect, test } from '@playwright/test'
 import { suppressChangelog } from '../../changelog-utils'
 import { LoginPage } from '../../pages/login-page'
+import { SignupPage } from '../../pages/signup-page'
 import { SentEmailChecker } from '../../sent-email-checker'
 import { generateUsername } from '../../username-generator'
-import { signupWith, VERIFICATION_LINK_REGEX } from './utils'
+import { VERIFICATION_LINK_REGEX } from './utils'
 
 const sentEmailChecker = new SentEmailChecker()
 
 let loginPage: LoginPage
+let signupPage: SignupPage
 
 test.beforeEach(async ({ page }) => {
   loginPage = new LoginPage(page)
+  signupPage = new SignupPage(page)
 })
 
 test('sign up and verify email with different user', async ({ context, page }) => {
-  await page.goto('/signup')
-  await suppressChangelog(page)
-
   const username = generateUsername()
   const email = `${username}@example.org`
 
-  await signupWith(page, {
-    username,
-    password: 'password123',
-    email,
-  })
+  await signupPage.navigateTo()
+  await signupPage.signupWith({ username, password: 'password123', email })
+
+  await suppressChangelog(page)
 
   await page.click('[data-test=notifications-button]')
   await page.waitForSelector('[data-test=email-verification-notification]')

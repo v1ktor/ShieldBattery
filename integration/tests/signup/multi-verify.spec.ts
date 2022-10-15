@@ -1,26 +1,29 @@
 import { expect, test } from '@playwright/test'
 import { suppressChangelog } from '../../changelog-utils'
+import { SignupPage } from '../../pages/signup-page'
 import { SentEmailChecker } from '../../sent-email-checker'
 import { generateUsername } from '../../username-generator'
-import { signupWith, VERIFICATION_LINK_REGEX } from './utils'
+import { VERIFICATION_LINK_REGEX } from './utils'
 
 const sentEmailChecker = new SentEmailChecker()
+
+let signupPage: SignupPage
+
+test.beforeEach(async ({ page }) => {
+  signupPage = new SignupPage(page)
+})
 
 test('wrong token -> resend -> first token -> second token', async ({ page }) => {
   // This test checks for regressions of a bug which caused a user to be in a session that was
   // stuck registering as "not verified" despite being verified in the DB. It ensures that
   // submitting tokens once an account is verified is a no-op but completes successfully.
-  await page.goto('/signup')
-  await suppressChangelog(page)
-
   const username = generateUsername()
   const email = `${username}@example.org`
 
-  await signupWith(page, {
-    username,
-    password: 'password123',
-    email,
-  })
+  await signupPage.navigateTo()
+  await signupPage.signupWith({ username, password: 'password123', email })
+
+  await suppressChangelog(page)
 
   await page.click('[data-test=notifications-button]')
   await page.waitForSelector('[data-test=email-verification-notification]')
